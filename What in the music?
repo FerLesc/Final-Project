@@ -1,1 +1,357 @@
+import tkinter as tk
+from tkinter import ttk
+import speech_recognition as sr
+import pygame
+import random
+import os
+import threading
+import time
+from mutagen.mp3 import MP3
 
+
+class MusicPlayer:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Voice Activated Music Player")
+        self.root.geometry("500x700")
+        self.root.configure(bg='#2C3E50')  # Dark blue background
+
+        # Configure styles
+        self.setup_styles()
+
+        # Initialize pygame mixer
+        pygame.mixer.init()
+
+        # Genre explanations
+        self.genre_explanations = {
+            "edm": "Electronic Dance Music (EDM) is electronic music made for dancing, featuring synthetic sounds and strong beats.",
+            "rap": "Rap is a style of popular music where words are spoken rhythmically over a beat, often addressing personal or social themes.",
+            "pop": "Pop music is contemporary commercial music that appeals to general audiences, known for catchy melodies and rhythms.",
+            "rock": "Rock music is characterized by driving rhythms, electric guitars, and often features powerful vocals and dramatic themes."
+        }
+
+        # Initialize variables
+        self.current_song_path = None
+        self.playing = False
+        self.current_song_length = 0
+        self.listening_active = False
+        self.is_listening = False
+        self.current_genre = None  # Track the current genre
+        self.current_song_index = -1  # Track the current song index
+        self.current_songs = []  # Track the current list of songs being played
+        self.is_dragging_progress = False  # New flag to track progress bar dragging
+
+
+        # Set up speech recognition
+        self.recognizer = sr.Recognizer()
+
+        self.setup_gui()
+        self.load_songs()
+        self.song_name_map = self.create_song_name_map()
+
+    def create_song_name_map(self):
+        """Create a mapping of song names to their full paths"""
+        song_name_map = {}
+        for genre, songs in self.songs.items():
+            for song_path in songs:
+                # Remove .mp3 extension and convert to lowercase for easier matching
+                song_name = os.path.splitext(os.path.basename(song_path))[0].lower()
+                song_name_map[song_name] = song_path
+        return song_name_map
+
+    def setup_styles(self):
+        """Configure custom styles for widgets"""
+        style = ttk.Style()
+        style.theme_use('default')
+
+        style.configure('Main.TFrame', background='#2C3E50')
+        style.configure('Title.TLabel', background='#2C3E50', foreground='#ECF0F1', font=('Helvetica', 14, 'bold'))
+        style.configure('Status.TLabel', background='#2C3E50', foreground='#ECF0F1', font=('Helvetica', 12))
+        style.configure('Help.TLabel', background='#2C3E50', foreground='#BDC3C7', font=('Helvetica', 11))
+        style.configure('Control.TButton', background='#3498DB', font=('Helvetica', 14))
+        style.configure('Mic.TButton', background='#E74C3C', font=('Helvetica', 16))
+        style.configure("Custom.Horizontal.TScale", background='#2C3E50', troughcolor='#34495E', slidercolor='#3498DB')
+
+    def load_songs(self):
+        """Dynamically load songs from the folders"""
+        self.songs = {}
+        base_path = "songs"
+
+        for genre in ['edm', 'rap', 'pop', 'rock']:
+            genre_path = os.path.join(base_path, genre)
+            if os.path.exists(genre_path):
+                self.songs[genre] = []
+                for song_file in os.listdir(genre_path):
+                    if song_file.endswith('.mp3'):
+                        full_path = os.path.join(genre_path, song_file)
+                        self.songs[genre].append(full_path)
+
+    def setup_gui(self):
+        """Set up the graphical user interface"""
+        self.main_frame = ttk.Frame(self.root, padding="20", style='Main.TFrame')
+        self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.root.grid_columnconfigure(0, weight=1)
+        self.root.grid_rowconfigure(0, weight=1)
+
+        title_label = ttk.Label(self.main_frame, text="Voice Activated Music Player", style='Title.TLabel')
+        title_label.grid(row=0, column=0, columnspan=2, pady=(0, 30))
+
+        self.status_label = ttk.Label(self.main_frame, text="Click microphone to start voice control",
+                                      wraplength=400, justify="center", style='Status.TLabel')
+        self.status_label.grid(row=1, column=0, columnspan=2, pady=(0, 20))
+
+        self.mic_button = ttk.Button(self.main_frame, text="🎤", command=self.handle_mic_button, style='Mic.TButton', width=10)
+        self.mic_button.grid(row=2, column=0, columnspan=2, pady=(0, 30))
+
+        self.current_song_label = ttk.Label(self.main_frame, text="No song playing", wraplength=400, justify="center",
+                                            style='Status.TLabel')
+        self.current_song_label.grid(row=3, column=0, columnspan=2, pady=(0, 20))
+
+        progress_frame = ttk.Frame(self.main_frame, style='Main.TFrame')
+        progress_frame.grid(row=4, column=0, columnspan=2, pady=(0, 20))
+
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Scale(progress_frame, from_=0, to=100, orient=tk.HORIZONTAL, 
+                                       variable=self.progress_var,
+                                       style="Custom.Horizontal.TScale", length=400,
+                                       command=self.on_progress_change)
+        self.progress_bar.grid(row=0, column=0, columnspan=3, pady=(0, 10))
+
+        # Time labels
+        self.current_time_label = ttk.Label(progress_frame, text="0:00", style='Status.TLabel')
+        self.current_time_label.grid(row=1, column=0, padx=(0, 10))
+
+        self.total_time_label = ttk.Label(progress_frame, text="0:00", style='Status.TLabel')
+        self.total_time_label.grid(row=1, column=2, padx=(10, 0))
+
+        control_frame = ttk.Frame(self.main_frame, style='Main.TFrame')
+        control_frame.grid(row=5, column=0, columnspan=2, pady=(0, 30))
+
+        self.play_button = ttk.Button(control_frame, text="⏵", command=self.toggle_playback, style='Control.TButton', width=3)
+        self.play_button.grid(row=0, column=1, padx=5)
+
+        self.next_button = ttk.Button(control_frame, text="⏭ Next", command=self.play_next_song, style='Control.TButton', width=8)
+        self.next_button.grid(row=0, column=2, padx=10)
+
+        self.prev_button = ttk.Button(control_frame, text="⏮ Previous", command=self.play_previous_song, style='Control.TButton',
+                                       width=8)
+        self.prev_button.grid(row=0, column=0, padx=10)
+
+        help_text = ("Voice Commands:\n\n"
+                     "• 'Play me a song'\n"
+                     "• 'Play me a [genre] song'\n"
+                     "• 'Play [song_name]'\n"
+                     "• 'Please explain [genre]'\n\n"
+                     "Available genres: EDM, Rap, Pop, Rock")
+        self.help_label = ttk.Label(self.main_frame, text=help_text, wraplength=400, justify="center", style='Help.TLabel')
+        self.help_label.grid(row=6, column=0, columnspan=2, pady=(0, 20))
+        
+        
+    def on_progress_change(self, value):
+        """Handle progress bar changes"""
+        if self.current_song_path:
+            try:
+                # Convert percentage to actual time
+                seek_time = float(value) * self.current_song_length / 100
+
+                # Stop the current update thread
+                self.playing = False
+                time.sleep(0.1)  # Give time for the thread to stop
+                # Seek to the new position
+                pygame.mixer.music.rewind()
+                pygame.mixer.music.set_pos(seek_time)
+                # Restart playback if it was playing
+                if not pygame.mixer.music.get_busy():
+                    pygame.mixer.music.play()
+                    self.playing = True
+                    threading.Thread(target=self.update_progress, daemon=True).start()
+            except Exception as e:
+                self.status_label.config(text=f"Error seeking: {str(e)}")
+
+        
+    def format_time(self, seconds):
+        """Convert seconds to MM:SS format"""
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{minutes}:{secs:02d}"
+    
+    
+    
+    
+    
+    
+
+    def handle_mic_button(self):
+        """Handle microphone button clicks"""
+        if self.playing:
+            self.status_label.config(text="Please stop the music before using voice commands")
+            return
+
+        if not self.is_listening:
+            self.listening_active = True
+            self.is_listening = True
+            # Temporarily disable the mic button while listening
+            self.mic_button.config(state="disabled")
+            threading.Thread(target=self.start_listening, daemon=True).start()
+
+    def start_listening(self):
+        """Start listening for voice commands"""
+        if not self.listening_active:
+            return
+
+        self.status_label.config(text="Listening...")
+        try:
+            with sr.Microphone() as source:
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=5)
+                command = self.recognizer.recognize_google(audio).lower()
+                self.process_command(command)
+        except sr.UnknownValueError:
+            self.status_label.config(text="Could not understand audio. Click microphone to try again.")
+        except sr.RequestError:
+            self.status_label.config(text="Could not reach the recognition service. Try again later.")
+        finally:
+            self.is_listening = False
+            self.listening_active = False
+            self.mic_button.config(state="normal")
+
+    def process_command(self, command):
+        """Process the voice command"""
+        # Check for specific song name first
+        for song_name, song_path in self.song_name_map.items():
+            if song_name in command.lower():
+                self.status_label.config(text=f"Playing song: {song_name}")
+                self.play_song(song_path)
+                return
+
+        if "play me a" in command and "song" in command:
+            for genre in self.songs.keys():
+                if genre in command:
+                    self.status_label.config(text=f"Playing a {genre} song...")
+                    self.play_random_song(genre)
+                    return
+
+            if "play me a song" in command:
+                self.status_label.config(text="Playing a random song...")
+                self.play_random_song()
+                return
+
+        elif any(word in command for word in ["explain", "what", "tell"]):
+            for genre in self.genre_explanations:
+                if genre in command:
+                    explanation = self.genre_explanations[genre]
+                    self.status_label.config(text=f"{genre.upper()}: {explanation}")
+                    return
+
+            self.status_label.config(text="Which genre would you like me to explain? (EDM, Rap, Pop, or Rock)")
+
+        else:
+            self.status_label.config(text="Command not recognized. Please try again.")
+
+    def play_random_song(self, genre=None):
+        """Play a random song, either from a specific genre or any genre"""
+        if self.playing:
+            pygame.mixer.music.stop()
+
+        try:
+            if genre and genre in self.songs and self.songs[genre]:
+                # If a specific genre is requested
+                self.current_genre = genre
+                self.current_songs = self.songs[genre]
+                song_path = random.choice(self.current_songs)
+            else:
+                # If no specific genre or genre is empty
+                available_genres = [g for g in self.songs if self.songs[g]]
+                if not available_genres:
+                    self.status_label.config(text="No songs available")
+                    return
+                
+                self.current_genre = random.choice(available_genres)
+                self.current_songs = self.songs[self.current_genre]
+                song_path = random.choice(self.current_songs)
+
+            self.current_song_index = self.current_songs.index(song_path)
+            self.play_song(song_path)
+        except Exception as e:
+            self.status_label.config(text=f"Error playing song: {str(e)}")
+
+    def play_next_song(self):
+        """Play the next song in the current list of songs"""
+        if not self.current_songs:
+            self.play_random_song()  # If no songs are currently playing, play a random one
+        else:
+            # Cycle through the current list of songs
+            self.current_song_index = (self.current_song_index + 1) % len(self.current_songs)
+            self.play_song(self.current_songs[self.current_song_index])
+
+    def play_previous_song(self):
+        """Play the previous song in the current list of songs"""
+        if not self.current_songs:
+            self.play_random_song()  # If no songs are currently playing, play a random one
+        else:
+            # Cycle through the current list of songs
+            self.current_song_index = (self.current_song_index - 1) % len(self.current_songs)
+            self.play_song(self.current_songs[self.current_song_index])
+
+    def play_song(self, song_path):
+        """Play the specified song"""
+        if self.playing:
+            pygame.mixer.music.stop()
+        try:
+            pygame.mixer.music.load(song_path)
+            pygame.mixer.music.play()
+            self.current_song_path = song_path
+            self.current_song_label.config(text=f"Now Playing: {os.path.basename(song_path)}")
+            self.play_button.config(text="⏸")
+            self.playing = True
+            audio = MP3(song_path)
+            self.current_song_length = audio.info.length
+            
+            # Update time labels
+            self.total_time_label.config(text=self.format_time(self.current_song_length))
+            self.current_time_label.config(text="0:00")
+            
+            self.progress_var.set(0)
+            threading.Thread(target=self.update_progress, daemon=True).start()
+        except Exception as e:
+            self.status_label.config(text=f"Error playing song: {str(e)}")
+
+    
+
+    def toggle_playback(self):
+        """Toggle between play and pause"""
+        if self.current_song_path:
+            if self.playing:
+                pygame.mixer.music.pause()
+                self.play_button.config(text="⏵")
+                self.playing = False
+            else:
+                pygame.mixer.music.unpause()
+                self.play_button.config(text="⏸")
+                self.playing = True
+                threading.Thread(target=self.update_progress, daemon=True).start()
+
+    def update_progress(self):
+        """Update the progress slider based on current song position"""
+        while self.playing:
+            if pygame.mixer.music.get_busy():
+                current_time = pygame.mixer.music.get_pos() / 1000
+                progress = (current_time / self.current_song_length) * 100
+                self.progress_var.set(progress)
+                
+                # Update current time label
+                self.current_time_label.config(text=self.format_time(current_time))
+                
+                time.sleep(0.1)
+            else:
+                self.playing = False
+                self.play_button.config(text="⏵")
+                self.progress_var.set(0)
+                self.current_time_label.config(text="0:00")
+                break
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = MusicPlayer(root)
+    root.mainloop()
